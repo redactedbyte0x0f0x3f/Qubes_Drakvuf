@@ -1,6 +1,6 @@
 # DRAKVUF® Black-box Binary Analysis System (Qubes 4.2)
 ***DRAKVUF® + libVMI + volatility3 + dwarf2json*** 
-***(tested on QubesOS 4.2.0-rc5 + Xen 4.17.2-5)***
+***(originally tested on QubesOS 4.2.0-rc5 + Xen 4.17.2-5; libxl patch notes updated for qubes-vmm-xen 4.19.4-8)***
 
 > :information_source: **Support open-source projects! Please take the time to [donate directly to the Qubes OS Project](https://www.qubes-os.org/donate/) alternatively, buy some cool [Qubes shirts/swag from Cyphermarket](https://www.cyphermarket.com/qubes/) an outfit that donates [50% of their profits](https://www.cyphermarket.com/about-cypher-market/) to the Qubes OS Project and other FOSS projects. If you find DRAKVUF® useful, consider [donating](https://www.honeynet.org/2012/12/18/donate-to-the-honeynet-project/) to the [Honeynet Project](https://www.honeynet.org/) who supports the development of DRAKVUF®.**
 
@@ -184,7 +184,7 @@ RELEASE := 4.2
 DIST_DOM0 ?= fc37
 include example-configs/qubes-os-r$(RELEASE).conf
 
-# main == 4.17.2-5 as of this writing
+# main == qubes-vmm-xen 4.19.4-8 as of this update
 BRANCH_qubes-vmm-xen = main
 
 # adjust these for building different pkgs/targets
@@ -199,39 +199,54 @@ USE_QUBES_REPO_VERSION = $(RELEASE)
 ```bash
 [user@untrusted-qubes-builder qubes-builder]$ sudo dnf install distribution-gpg-keys -y
 ```
-5. A .patch file is a text file that contains the differences between two sets of code. It's a way of showing what changes need to be made to the original code in order to turn it into the updated code. Create the .patch file below in the vmm-xen folder named `1203-libxl-altp2m-default.patch` and also add it to `xen.spec.in`:
+5. A .patch file is a text file that contains the differences between two sets of code. It's a way of showing what changes need to be made to the original code in order to turn it into the updated code. For current `qubes-vmm-xen` packaging based on Xen 4.19.4, create the patch below in the `qubes-vmm-xen` folder named `1203-libxl-enable-external-altp2m-for-sandbox-domains.patch` and add it to `xen.spec.in` after `Patch1202`.
+
+   Xen 4.19 uses the non-deprecated `b_info.altp2m` mode field. The older `u.hvm.altp2m` boolean still exists for legacy callers, but the mode field is what `libxl__domain_make()` logs and passes into `xc_domain_create()`. Also note that `libxl__domain_build_info_setdefault()` does not have a reliable domain name/domid mapping at this point in the create path; use `libxl__domain_config_setdefault()` and `d_config->c_info.name` instead.
 ```bash
-[user@untrusted-qubes-builder qubes-vmm-xen]$ vim 1203-libxl-altp2m-default.patch 
+[user@untrusted-qubes-builder qubes-vmm-xen]$ vim 1203-libxl-enable-external-altp2m-for-sandbox-domains.patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.invalid>
+Date: Sun, 31 May 2026 17:20:00 -0500
+Subject: [PATCH] libxl: enable external altp2m for sandbox domains
+
+Qubes does not expose libxl's altp2m setting through the normal VM
+configuration path. For DRAKVUF-style analysis VMs, default domains whose
+names start with "sandbox_" to the external altp2m mode.
+
+Use the non-deprecated libxl_domain_build_info.altp2m mode field introduced
+for current Xen rather than the legacy u.hvm.altp2m defbool.
+---
+ tools/libs/light/libxl_create.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/tools/libs/light/libxl_create.c b/tools/libs/light/libxl_create.c
 --- a/tools/libs/light/libxl_create.c
 +++ b/tools/libs/light/libxl_create.c
-@@ -420,7 +420,15 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
-                                           libxl_defbool_setdefault(&b_info->u.hvm.viridian,           false);
-                                           libxl_defbool_setdefault(&b_info->u.hvm.hpet,               true);
-                                           libxl_defbool_setdefault(&b_info->u.hvm.vpt_align,          true);
+@@ -1264,6 +1266,14 @@ int libxl__domain_config_setdefault(libxl__gc *gc,
+         goto error_out;
+     }
++
++    if (d_config->c_info.type == LIBXL_DOMAIN_TYPE_HVM &&
++        d_config->b_info.altp2m == LIBXL_ALTP2M_MODE_DISABLED &&
++        d_config->c_info.name &&
++        strncmp(d_config->c_info.name, "sandbox_",
++                sizeof("sandbox_") - 1) == 0) {
++        d_config->b_info.altp2m = LIBXL_ALTP2M_MODE_EXTERNAL;
++    }
++
+     if (d_config->c_info.type != LIBXL_DOMAIN_TYPE_PV &&
+         (libxl_defbool_val(d_config->b_info.nested_hvm) &&
+         ((d_config->c_info.type == LIBXL_DOMAIN_TYPE_HVM &&
 
--        libxl_defbool_setdefault(&b_info->u.hvm.altp2m,             false);
-+        char *desired_prefix = "sandbox_"; // Replace this with your desired prefix
-+
-+        char *domname = NULL;
-+        libxl_domid_to_name(ctx, domid, &domname); // Fetch the domain name
-+
-+        if (strncmp(domname, desired_prefix, strlen(desired_prefix)) == 0)
-+            libxl_defbool_setdefault(&b_info->u.hvm.altp2m, true);
-+        else
-+            libxl_defbool_setdefault(&b_info->u.hvm.altp2m, false);
- 
-         libxl_defbool_setdefault(&b_info->u.hvm.usb,                false);
-         libxl_defbool_setdefault(&b_info->u.hvm.vkb_device,         false);
-@@ -428,6 +436,8 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
-  
-         libxl_defbool_setdefault(&b_info->u.hvm.altp2m,             false);
-         libxl_defbool_setdefault(&b_info->u.hvm.usb,                false);
-+
-+        libxl_name_to_domid(ctx, domname, NULL); // Release the domain name
+[user@untrusted-qubes-builder qubes-vmm-xen]$ sed -i '/Patch1202: 1202-libxl-Add-partially-Intel-GVT-g-support-xengt-device.patch/a Patch1203: 1203-libxl-enable-external-altp2m-for-sandbox-domains.patch' xen.spec.in
 
-[user@untrusted-qubes-builder qubes-vmm-xen]$ sed -i '/Patch1202: 1202-libxl-Add-partially-Intel-GVT-g-support-xengt-device.patch/a \\n#altp2m\nPatch1203: 1203-libxl-altp2m-default.patch' xen.spec.in
+[user@untrusted-qubes-builder qubes-vmm-xen]$ grep 'Patch120[0-3]' xen.spec.in
+Patch1200: 1200-hypercall-XENMEM_get_mfn_from_pfn.patch
+Patch1201: 1201-patch-gvt-hvmloader.patch.patch
+Patch1202: 1202-libxl-Add-partially-Intel-GVT-g-support-xengt-device.patch
+Patch1203: 1203-libxl-enable-external-altp2m-for-sandbox-domains.patch
 ```
-In this context, we're using a .patch file to modify the `libxl__domain_build_info_setdefault` function in `libxl_create.c`. This allows us to enable the `altp2m` feature for domains whose name starts with a particular prefix (by default "sandbox_"). Finally, it also appropriately releases the string holding the domain name after it's no longer needed.
+In this context, we're using a .patch file to modify the `libxl__domain_config_setdefault` function in `libxl_create.c`. This allows us to enable `altp2m="external"` for HVM domains whose name starts with `sandbox_`. The old `libxl_domid_to_name()` approach is no longer recommended here: at defaulting time the domain may not have been created yet, and the returned name would need `free()`, not a reverse lookup with `libxl_name_to_domid()`.
 
 6. Building vmm-xen:
 ```bash
